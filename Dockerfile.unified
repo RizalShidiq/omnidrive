@@ -1,0 +1,41 @@
+FROM node:22-slim AS builder
+
+WORKDIR /app
+
+COPY package.json package-lock.json* ./
+COPY packages/worker/package.json ./packages/worker/package.json
+COPY packages/web/package.json ./packages/web/package.json
+
+RUN npm ci
+
+COPY tsconfig.base.json ./
+COPY packages/worker ./packages/worker
+COPY packages/web ./packages/web
+
+# Build frontend and node backend
+RUN npm run build:web
+RUN npm --workspace=@omnidrive/worker run build:node
+
+# Final lightweight image
+FROM node:22-slim
+
+WORKDIR /app
+
+# Copy built node server
+COPY --from=builder /app/packages/worker/dist/node-server.cjs ./node-server.cjs
+COPY --from=builder /app/packages/worker/src/db/schema.sql ./src/db/schema.sql
+
+# Copy built static frontend
+COPY --from=builder /app/packages/web/dist ./web/dist
+
+# Install only better-sqlite3 for the runner (it contains native bindings)
+# esbuild bundles everything else, but native modules must be installed
+RUN npm init -y && npm install better-sqlite3
+
+ENV NODE_ENV=production
+ENV STATIC_DIR=./web/dist
+ENV DATA_DIR=/app/data
+
+EXPOSE 8080
+
+CMD ["node", "node-server.cjs"]
